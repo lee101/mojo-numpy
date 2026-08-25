@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
@@ -31,19 +32,91 @@ _SIGNATURES = {
     "mn_reduce": ([I, I, I, I, I, I], None),
     "mn_argreduce": ([I, I, I, I, I], None),
     "mn_sort": ([I, I, I, I, I], None),
+    "mn_sort_inplace": ([I, I], None),
+    "mn_merge_numeric": ([I, I, I, I, I], None),
     "mn_argsort": ([I, I, I, I, I, I, I], None),
     "mn_dot": ([I, I, I], F),
     "mn_matmul": ([I, I, I, I, I, I], None),
+    "mn_matmul_gpu": ([I, I, I, I, I, I], I),
     "mn_norm": ([I, I], F),
     "mn_cholesky": ([I, I], I),
     "mn_solve": ([I, I, I, I], I),
     "mn_det": ([I, I], F),
     "mn_random_uniform": ([I, I, I, F, F], None),
     "mn_random_normal": ([I, I, I, F, F], None),
+    "mn_random_normal_range": ([I, I, I, I, I, F, F], None),
+    "mn_random_normal_advance": ([I, I], None),
     "mn_random_integers": ([I, I, I, I, I], None),
 }
 
 _loaded: ctypes.CDLL | None = None
+_blas_loaded: ctypes.CDLL | None = None
+_executor: ThreadPoolExecutor | None = None
+
+
+def parallel_workers() -> int:
+    try:
+        logical = len(os.sched_getaffinity(0))
+    except AttributeError:
+        logical = os.cpu_count() or 1
+    return max(1, logical // 2)
+
+
+def parallel_calls(function, arguments) -> None:
+    global _executor
+    if _executor is None:
+        _executor = ThreadPoolExecutor(max_workers=parallel_workers())
+    futures = [_executor.submit(function, *args) for args in arguments]
+    for future in futures:
+        future.result()
+
+
+def blas_matmul(left: np.ndarray, right: np.ndarray, result: np.ndarray) -> bool:
+    global _blas_loaded
+    if _blas_loaded is False:
+        return False
+    if _blas_loaded is None:
+        try:
+            _blas_loaded = ctypes.CDLL("libopenblas.so.0")
+            _blas_loaded.cblas_dgemm.argtypes = [
+                ctypes.c_int,
+                ctypes.c_int,
+                ctypes.c_int,
+                ctypes.c_int,
+                ctypes.c_int,
+                ctypes.c_int,
+                F,
+                ctypes.c_void_p,
+                ctypes.c_int,
+                ctypes.c_void_p,
+                ctypes.c_int,
+                F,
+                ctypes.c_void_p,
+                ctypes.c_int,
+            ]
+            _blas_loaded.cblas_dgemm.restype = None
+        except (OSError, AttributeError):
+            _blas_loaded = False
+            return False
+    m, k = left.shape
+    n = right.shape[1]
+    _blas_loaded.cblas_dgemm(
+        101,
+        111,
+        111,
+        m,
+        n,
+        k,
+        1.0,
+        addr(left),
+        k,
+        addr(right),
+        n,
+        0.0,
+        addr(result),
+        n,
+    )
+    return True
 
 
 def lib() -> ctypes.CDLL:

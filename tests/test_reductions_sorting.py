@@ -94,3 +94,8 @@ def test_parallel_sort_threshold_and_tail():
     values[19] = np.nan
     values[-7] = np.nan
     assert np.array_equal(mnp.sort(values), np.sort(values), equal_nan=True)
+
+
+def test_parallel_sort_without_nan():
+    values = np.random.default_rng(95).normal(size=262_147)
+    assert np.array_equal(mnp.sort(values), np.sort(values))

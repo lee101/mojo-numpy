@@ -40,6 +40,22 @@ def test_matmul_simd_tails():
     assert mnp.matmul(np.empty((0, 3)), np.empty((3, 4))).shape == (0, 4)
 
 
+def test_matmul_parallel_threshold():
+    rng = np.random.default_rng(96)
+    a = rng.normal(size=(96, 80))
+    b = rng.normal(size=(80, 72))
+    assert np.allclose(mnp.matmul(a, b), np.matmul(a, b), rtol=2e-14, atol=2e-14)
+
+
+def test_matmul_gpu_or_cpu_fallback():
+    rng = np.random.default_rng(97)
+    a = rng.normal(size=(17, 13))
+    b = rng.normal(size=(13, 19))
+    assert np.allclose(mnp.matmul(a, b, device="gpu"), np.matmul(a, b))
+    with pytest.raises(ValueError, match="device"):
+        mnp.matmul(a, b, device="tpu")
+
+
 def test_norm_parity(matrices):
     a, _ = matrices
     assert mnp.linalg.norm(a) == pytest.approx(np.linalg.norm(a))

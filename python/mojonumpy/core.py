@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import operator
+import builtins as _builtins
 from functools import reduce
 
 import numpy as _np
 
-from ._lib import addr, f64, lib
+from ._lib import addr, f64, lib, parallel_calls, parallel_workers
 
 
 def _dtype_ok(dtype) -> None:
@@ -291,18 +292,59 @@ def sort(a, axis=-1, kind=None, order=None, *, stable=None):
     matrix, normalized = _sort_layout(a, axis)
     result = _np.empty_like(matrix)
     if matrix.size:
-        work = (
-            _np.empty_like(matrix)
-            if matrix.shape[1] >= 262_144
-            else None
-        )
-        lib().mn_sort(
-            addr(matrix),
-            addr(result),
-            addr(work) if work is not None else 0,
-            matrix.shape[0],
-            matrix.shape[1],
-        )
+        cols = matrix.shape[1]
+        if cols >= 262_144 and not _np.isnan(matrix).any():
+            result[...] = matrix
+            work = _np.empty_like(matrix)
+            workers = _builtins.min(
+                parallel_workers(), _builtins.max(1, cols // 16_384)
+            )
+            chunks = workers * 2
+            kernel = lib().mn_sort_inplace
+            for row in range(matrix.shape[0]):
+                row_addr = addr(result[row])
+                chunk_width = (cols + chunks - 1) // chunks
+                parallel_calls(
+                    kernel,
+                    [
+                        (
+                            row_addr + start * 8,
+                            _builtins.min(chunk_width, cols - start),
+                        )
+                        for start in range(0, cols, chunk_width)
+                    ],
+                )
+                src_addr = row_addr
+                tmp_addr = addr(work[row])
+                width = chunk_width
+                while width < cols:
+                    merges = (cols + 2 * width - 1) // (2 * width)
+                    parallel_calls(
+                        lib().mn_merge_numeric,
+                        [
+                            (
+                                src_addr,
+                                tmp_addr,
+                                start,
+                                _builtins.min(start + width, cols),
+                                _builtins.min(start + 2 * width, cols),
+                            )
+                            for start in range(0, cols, 2 * width)
+                        ],
+                    )
+                    src_addr, tmp_addr = tmp_addr, src_addr
+                    width *= 2
+                if src_addr != row_addr:
+                    _np.copyto(result[row], work[row])
+        else:
+            work = _np.empty_like(matrix) if cols >= 262_144 else None
+            lib().mn_sort(
+                addr(matrix),
+                addr(result),
+                addr(work) if work is not None else 0,
+                matrix.shape[0],
+                cols,
+            )
     if axis is None:
         return result.ravel()
     moved_shape = _np.moveaxis(_np.asarray(a), normalized, -1).shape

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as _np
 
-from ._lib import addr, f64, lib
+from ._lib import addr, blas_matmul, f64, lib, parallel_calls, parallel_workers
 
 
 class LinAlgError(Exception):
@@ -16,9 +16,11 @@ def _matrix(value):
     return result
 
 
-def matmul(x1, x2, out=None, *, dtype=None, **kwargs):
+def matmul(x1, x2, out=None, *, dtype=None, device="cpu", **kwargs):
     if dtype is not None and _np.dtype(dtype) != _np.dtype(_np.float64):
         raise TypeError("the Mojo kernel subset currently supports float64 output")
+    if device not in ("cpu", "gpu"):
+        raise ValueError("device must be 'cpu' or 'gpu'")
     a = _np.asarray(x1)
     b = _np.asarray(x2)
     a_was_vector = a.ndim == 1
@@ -36,21 +38,50 @@ def matmul(x1, x2, out=None, *, dtype=None, **kwargs):
     batches = _np.ndindex(batch) if batch else [()]
     for index in batches:
         left = f64(aa[index])
-        right = f64(_np.swapaxes(bb[index], -1, -2))
+        right_matrix = f64(bb[index])
         target = result[index]
         if target.size == 0:
             continue
         if left.shape[1] == 0:
             target.fill(0.0)
             continue
-        lib().mn_matmul(
+        gpu_bytes = left.nbytes + right_matrix.nbytes + target.nbytes
+        if device == "gpu" and gpu_bytes < 2 * 1024**3 and lib().mn_matmul_gpu(
             addr(left),
-            addr(right),
+            addr(right_matrix),
             addr(target),
             left.shape[0],
             left.shape[1],
-            right.shape[0],
-        )
+            right_matrix.shape[1],
+        ):
+            continue
+        if blas_matmul(left, right_matrix, target):
+            continue
+        right = f64(_np.swapaxes(right_matrix, -1, -2))
+        m, k, n = left.shape[0], left.shape[1], right.shape[0]
+        kernel = lib().mn_matmul
+        if 2 * m * k * n >= 1_048_576 and m > 1:
+            workers = min(parallel_workers(), m)
+            arguments = []
+            left_addr = addr(left)
+            right_addr = addr(right)
+            target_addr = addr(target)
+            for worker in range(workers):
+                start = worker * m // workers
+                end = (worker + 1) * m // workers
+                arguments.append(
+                    (
+                        left_addr + start * k * 8,
+                        right_addr,
+                        target_addr + start * n * 8,
+                        end - start,
+                        k,
+                        n,
+                    )
+                )
+            parallel_calls(kernel, arguments)
+        else:
+            kernel(addr(left), addr(right), addr(target), m, k, n)
     if a_was_vector:
         result = _np.squeeze(result, axis=-2)
     if b_was_vector:

@@ -15,6 +15,8 @@ PYTHONPATH = "python"
 
 [dependencies]
 mojo = "==1.1.0.dev2026081105"
+max = "==26.6.0.dev2026081105"
 python = "3.13.*"
 pytest = "*"
 numpy = "*"
+libopenblas = "*"

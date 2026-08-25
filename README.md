@@ -73,19 +73,25 @@ process. The benchmark checks numerical correctness before timing.
 
 | case | mojo-numpy | NumPy | result |
 | --- | ---: | ---: | ---: |
-| add (5M) | 39.53 ms | 39.48 ms | 1.00x slower |
-| tanh (2M) | 10.25 ms | 50.53 ms | 4.93x faster |
-| sum (5M) | 6.35 ms | 5.44 ms | 1.17x slower |
-| sort (1M) | 107.49 ms | 22.98 ms | 4.68x slower |
-| matmul (256x256) | 5.75 ms | 0.21 ms | 26.92x slower |
-| solve (256x256) | 13.11 ms | 571.51 ms | 43.58x faster |
-| standard_normal (2M) | 16.61 ms | 39.34 ms | 2.37x faster |
+| add (5M) | 22.45 ms | 24.51 ms | 1.09x faster |
+| tanh (2M) | 37.56 ms | 42.20 ms | 1.12x faster |
+| sum (5M) | 2.53 ms | 2.94 ms | 1.16x faster |
+| sort (1M) | 54.28 ms | 22.18 ms | 2.45x slower |
+| matmul (256x256) | 0.23 ms | 0.18 ms | 1.27x slower |
+| matmul GPU (1024x1024) | 7.41 ms | 20.99 ms | 2.83x faster |
+| solve (256x256) | 4.76 ms | 164.98 ms | 34.66x faster |
+| standard_normal (2M) | 7.29 ms | 30.01 ms | 4.11x faster |
 
-The result remains mixed. Thresholded parallel execution puts `tanh` and normal
-generation ahead, while the multi-accumulator SIMD sum is at parity. Parallel
-chunk sorting and the register-accumulating matrix microkernel narrow the two
-largest gaps, but NumPy's tuned sort and BLAS matrix multiplication remain well
-ahead. The large `solve` win is specific to the NumPy/BLAS build on this
+The result remains mixed. Large normal generation dispatches deterministic,
+independent Box-Muller ranges to persistent CPU workers and is now well ahead.
+Large numeric sorts use parallel quicksort partitions and merge passes, cutting
+the gap substantially while remaining behind NumPy's tuned sort. CPU matrix
+multiplication uses row-major OpenBLAS without a transpose or intermediate copy,
+with the SIMD Mojo microkernel retained as a fallback. Explicit
+`matmul(..., device="gpu")` uses a Mojo GPU kernel and silently falls back to
+CPU if no compatible device is available, less than 4000 MiB is free, or total
+device allocation would exceed 2 GiB. The guarded GPU benchmark allocates about
+24 MiB. The large `solve` win is specific to the NumPy/BLAS build on this
 measured machine; it should not be assumed on a system linked to a faster
 LAPACK.
 
@@ -102,8 +108,9 @@ library build cost is largely fixed. `build/build.sh` compiles it with
 `mojo build --emit shared-lib` into `dist/libmojo-numpy.so`.
 
 The `python/mojonumpy` layer owns all arrays and scratch space. It normalizes
-shapes and strides, then makes one `ctypes` call per bulk operation. Buffers
-cross the C ABI as integer addresses and are reconstructed in Mojo as
+shapes and strides, then makes one call or a bounded set of independent range
+calls per bulk operation. Buffers cross the C ABI as integer addresses and are
+reconstructed in Mojo as
 `UnsafePointer[..., AnyOrigin[mut=True]]`; this avoids parametric exported
 functions. Arrays remain row-major, and Mojo never retains or frees
 Python-owned memory.
@@ -113,10 +120,11 @@ trailing dimension, then process the data as a batch of rows. Reductions use
 architecture-selected SIMD widths and multiple accumulators. Large default
 sorts use parallel in-place quicksort chunks followed by parallel merges;
 explicitly stable sorting retains stable index ordering. Matrix multiplication
-transposes the right operand once and accumulates four SIMD dot products in
-registers. Linear solves use LU decomposition with partial pivoting. Normal
-random values use a 64-bit LCG with Box-Muller and deterministic jump-ahead
-states for independent parallel chunks.
+passes contiguous NumPy buffers directly to OpenBLAS on CPU, retains a
+four-output SIMD Mojo fallback, and offers an explicit guarded `std.gpu` path.
+Linear solves use LU decomposition with partial pivoting. Normal random values
+use a 64-bit LCG with Box-Muller and deterministic jump-ahead states for
+independent parallel chunks.
 
 ## License
 

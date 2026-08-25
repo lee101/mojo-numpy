@@ -5,7 +5,7 @@ import operator
 
 import numpy as _np
 
-from ._lib import addr, lib
+from ._lib import addr, lib, parallel_calls, parallel_workers
 
 
 def _shape(size):
@@ -56,9 +56,7 @@ class Generator:
             raise TypeError("only float64 random output is covered")
         result = _np.empty(_shape(size), dtype=_np.float64)
         if result.size:
-            lib().mn_random_normal(
-                addr(self._state), addr(result), result.size, 0.0, 1.0
-            )
+            self._normal_into(result, 0.0, 1.0)
         return _finish(result, out)
 
     def normal(self, loc=0.0, scale=1.0, size=None):
@@ -66,10 +64,35 @@ class Generator:
             raise ValueError("scale < 0")
         result = _np.empty(_shape(size), dtype=_np.float64)
         if result.size:
-            lib().mn_random_normal(
-                addr(self._state), addr(result), result.size, loc, scale
-            )
+            self._normal_into(result, loc, scale)
         return _finish(result)
+
+    def _normal_into(self, result, mean, scale):
+        if result.size < 262_144:
+            lib().mn_random_normal(
+                addr(self._state), addr(result), result.size, mean, scale
+            )
+            return
+        pairs = (result.size + 1) // 2
+        workers = min(parallel_workers(), pairs)
+        state_addr = addr(self._state)
+        result_addr = addr(result)
+        parallel_calls(
+            lib().mn_random_normal_range,
+            [
+                (
+                    state_addr,
+                    result_addr,
+                    result.size,
+                    worker * pairs // workers,
+                    (worker + 1) * pairs // workers,
+                    mean,
+                    scale,
+                )
+                for worker in range(workers)
+            ],
+        )
+        lib().mn_random_normal_advance(state_addr, pairs)
 
     def integers(self, low, high=None, size=None, dtype=_np.int64, endpoint=False):
         if _np.dtype(dtype) != _np.dtype(_np.int64):

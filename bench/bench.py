@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import os
 import platform
+import subprocess
 import sys
 import time
 
@@ -34,7 +35,23 @@ def cpu_name():
     return platform.processor() or "unknown CPU"
 
 
-def cases():
+def gpu_memory_free_mib():
+    try:
+        output = subprocess.check_output(
+            [
+                "nvidia-smi",
+                "--query-gpu=memory.free",
+                "--format=csv,noheader,nounits",
+            ],
+            text=True,
+            timeout=5,
+        )
+        return min(int(line.strip()) for line in output.splitlines() if line.strip())
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return 0
+
+
+def cases(gpu_free_mib):
     rng = np.random.default_rng(2026)
 
     a = rng.normal(size=5_000_000)
@@ -53,6 +70,15 @@ def cases():
     left = rng.normal(size=(256, 256))
     right = rng.normal(size=(256, 256))
     yield "matmul (256x256)", lambda: mnp.matmul(left, right), lambda: np.matmul(left, right)
+
+    if gpu_free_mib >= 4000:
+        gpu_left = rng.normal(size=(1024, 1024))
+        gpu_right = rng.normal(size=(1024, 1024))
+        yield (
+            "matmul GPU (1024x1024)",
+            lambda: mnp.matmul(gpu_left, gpu_right, device="gpu"),
+            lambda: np.matmul(gpu_left, gpu_right),
+        )
 
     system = rng.normal(size=(256, 256))
     system += np.eye(256) * 20
@@ -81,10 +107,14 @@ def equivalent(name, ours, theirs):
 
 def main():
     print(f"Machine: {cpu_name()}; {platform.system()} {platform.release()}")
+    gpu_free_mib = gpu_memory_free_mib()
+    if gpu_free_mib < 4000:
+        detail = f"only {gpu_free_mib} MiB free" if gpu_free_mib else "no GPU available"
+        print(f"GPU benchmark skipped: {detail}")
     print()
     print("| case | mojo-numpy | NumPy | result |")
     print("| --- | ---: | ---: | ---: |")
-    for name, mojo_fn, numpy_fn in cases():
+    for name, mojo_fn, numpy_fn in cases(gpu_free_mib):
         ours = mojo_fn()
         theirs = numpy_fn()
         if not equivalent(name, ours, theirs):
