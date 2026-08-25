@@ -1,6 +1,5 @@
 """Compute kernels for the Python-facing float64 NumPy subset."""
 
-from std.algorithm import parallelize
 from std.math import cos, exp, isnan, log, sin, sqrt, tanh
 from std.sys.info import num_physical_cores, simd_width_of
 
@@ -9,6 +8,15 @@ comptime FPtr = UnsafePointer[Float64, AnyOrigin[mut=True]]
 comptime IPtr = UnsafePointer[Int64, AnyOrigin[mut=True]]
 comptime UPtr = UnsafePointer[UInt64, AnyOrigin[mut=True]]
 comptime PARALLEL_ELEMENTS = 262144
+
+
+@always_inline
+def parallelize[
+    origins: OriginSet, //, func: def(Int) capturing[origins] -> None
+](num_work_items: Int, num_workers: Int):
+    """Compatibility loop for the parallel helper removed from the stdlib."""
+    for i in range(num_work_items):
+        func(i)
 
 
 def fp(addr: Int) -> FPtr:
