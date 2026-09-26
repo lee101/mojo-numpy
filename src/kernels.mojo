@@ -1,6 +1,6 @@
 """Compute kernels for the Python-facing float64 NumPy subset."""
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from std.math import cos, exp, isnan, log, sin, sqrt, tanh
 from std.sys.info import num_physical_cores, simd_width_of
